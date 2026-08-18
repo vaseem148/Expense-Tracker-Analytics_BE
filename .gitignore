@@ -5,3 +5,9 @@ dist/
 .env
 coverage/
 .DS_Store
+.token
+tok.tmp
+artifacts/
+__pycache__/
+.venv/
+*.joblib
