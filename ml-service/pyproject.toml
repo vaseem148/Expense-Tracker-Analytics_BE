@@ -1,0 +1,18 @@
+[project]
+name = "expenseanalytics-ml"
+version = "1.0.0"
+description = "Data-science service for Expense Analytics: classification, anomaly detection, clustering, forecasting and risk scoring"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.34",
+  "pydantic>=2.10",
+  "scikit-learn>=1.6",
+  "pandas>=2.2",
+  "numpy>=2.0",
+  "statsmodels>=0.14",
+  "joblib>=1.4",
+]
+
+[tool.ruff]
+line-length = 100

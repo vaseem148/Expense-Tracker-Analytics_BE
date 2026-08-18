@@ -38,6 +38,11 @@ model User {
   notifications Notification[]
   auditLogs     AuditLog[]
   tags          Tag[]
+  memberships   OrgMember[]     @relation("MemberUser")
+  reports       OrgMember[]     @relation("MemberManager")
+  claims        ExpenseClaim[]  @relation("ClaimOwner")
+  decisions     ExpenseClaim[]  @relation("ClaimApprover")
+  ownedOrgs     Organization[]
 
   @@index([email])
 }
@@ -161,6 +166,21 @@ model Transaction {
   deletedAt     DateTime?
   importBatchId String?
   externalHash  String?
+
+  // --- business layer -------------------------------------------------
+  scope          String  @default("PERSONAL") // PERSONAL | BUSINESS
+  orgId          String?
+  vendorId       String?
+  departmentId   String?
+  projectId      String?
+  claimId        String?
+  invoiceId      String?
+  taxRateBps     Int     @default(0) // GST/VAT rate in basis points (1800 = 18%)
+  taxAmountMinor Int     @default(0)
+  isBillable     Boolean @default(false)
+  isReimbursable Boolean @default(false)
+  invoiceNumber  String?
+
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -171,17 +191,30 @@ model Transaction {
   recurring RecurringRule?   @relation(fields: [recurringId], references: [id], onDelete: SetNull)
   tags      TransactionTag[]
 
+  org        Organization?  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  vendor     Vendor?        @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  department Department?    @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  project    Project?       @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  claim      ExpenseClaim?  @relation(fields: [claimId], references: [id], onDelete: SetNull)
+  invoice    Invoice?       @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+
   @@unique([userId, externalHash])
   @@index([userId, date])
   @@index([userId, type, date])
   @@index([userId, categoryId, date])
   @@index([userId, isDeleted])
   @@index([userId, merchantKey])
+  @@index([orgId, date])
+  @@index([orgId, departmentId, date])
+  @@index([orgId, vendorId, date])
+  @@index([claimId])
 }
 
 model Budget {
   id             String    @id @default(cuid())
   userId         String
+  orgId          String?
+  departmentId   String?
   categoryId     String?
   name           String
   amountMinor    Int
@@ -194,10 +227,13 @@ model Budget {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  category Category? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category   Category?     @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  org        Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  department Department?   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
 
   @@index([userId, isActive])
+  @@index([orgId, isActive])
 }
 
 model RecurringRule {
@@ -280,4 +316,330 @@ model AuditLog {
 
   @@index([userId, createdAt])
   @@index([entity, entityId])
+}
+
+// ===========================================================================
+// BUSINESS LAYER
+// A user can run a personal ledger (scope=PERSONAL) and belong to one or more
+// organizations (scope=BUSINESS). Everything below is org-scoped.
+// ===========================================================================
+
+model Organization {
+  id                   String   @id @default(cuid())
+  name                 String
+  slug                 String   @unique
+  legalName            String?
+  gstin                String?
+  pan                  String?
+  addressLine          String?
+  city                 String?
+  state                String?
+  country              String   @default("IN")
+  currency             String   @default("INR")
+  fiscalYearStartMonth Int      @default(4) // April for India
+  logoColor            String   @default("#6366f1")
+  ownerId              String
+  monthlyRunwayTarget  Int      @default(0)
+  cashOnHandMinor      Int      @default(0)
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  owner        User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  members      OrgMember[]
+  departments  Department[]
+  vendors      Vendor[]
+  projects     Project[]
+  claims       ExpenseClaim[]
+  invoices     Invoice[]
+  transactions Transaction[]
+  budgets      Budget[]
+  policies     ApprovalPolicy[]
+
+  @@index([ownerId])
+}
+
+model OrgMember {
+  id           String   @id @default(cuid())
+  orgId        String
+  userId       String
+  role         String   @default("EMPLOYEE") // OWNER | ADMIN | FINANCE | MANAGER | EMPLOYEE
+  title        String?
+  departmentId String?
+  managerId    String?
+  monthlyLimit Int      @default(0) // 0 = no personal spend cap
+  isActive     Boolean  @default(true)
+  joinedAt     DateTime @default(now())
+
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user       User         @relation("MemberUser", fields: [userId], references: [id], onDelete: Cascade)
+  manager    User?        @relation("MemberManager", fields: [managerId], references: [id], onDelete: SetNull)
+  department Department?  @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  @@unique([orgId, userId])
+  @@index([orgId, role])
+}
+
+model Department {
+  id            String   @id @default(cuid())
+  orgId         String
+  name          String
+  code          String
+  monthlyBudget Int      @default(0)
+  headUserId    String?
+  color         String   @default("#0ea5e9")
+  createdAt     DateTime @default(now())
+
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  members      OrgMember[]
+  transactions Transaction[]
+  budgets      Budget[]
+
+  @@unique([orgId, code])
+  @@index([orgId])
+}
+
+model Vendor {
+  id               String   @id @default(cuid())
+  orgId            String
+  name             String
+  normKey          String
+  gstin            String?
+  pan              String?
+  email            String?
+  phone            String?
+  category         String?
+  paymentTermsDays Int      @default(30)
+  isPreferred      Boolean  @default(false)
+  riskScore        Float    @default(0) // 0-100, produced by the ML service
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+  invoices     Invoice[]
+
+  @@unique([orgId, name])
+  @@index([orgId, normKey])
+}
+
+model Project {
+  id          String    @id @default(cuid())
+  orgId       String
+  name        String
+  code        String
+  clientName  String?
+  budgetMinor Int       @default(0)
+  startDate   DateTime
+  endDate     DateTime?
+  status      String    @default("ACTIVE") // ACTIVE | ON_HOLD | COMPLETED
+  isBillable  Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@unique([orgId, code])
+  @@index([orgId, status])
+}
+
+/// Employee reimbursement claim: a bundle of transactions moving through
+/// DRAFT -> SUBMITTED -> APPROVED/REJECTED -> REIMBURSED.
+model ExpenseClaim {
+  id            String    @id @default(cuid())
+  orgId         String
+  userId        String
+  title         String
+  description   String?
+  status        String    @default("DRAFT")
+  totalMinor    Int       @default(0)
+  submittedAt   DateTime?
+  decidedAt     DateTime?
+  decidedById   String?
+  decisionNote  String?
+  reimbursedAt  DateTime?
+  paymentRef    String?
+  policyFlags   String? // JSON array of violated policy codes
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  org       Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user      User          @relation("ClaimOwner", fields: [userId], references: [id], onDelete: Cascade)
+  decidedBy User?         @relation("ClaimApprover", fields: [decidedById], references: [id], onDelete: SetNull)
+  items     Transaction[]
+
+  @@index([orgId, status])
+  @@index([userId, status])
+}
+
+/// Accounts-payable bill from a vendor. Drives DPO and cash-out forecasting.
+model Invoice {
+  id            String    @id @default(cuid())
+  orgId         String
+  vendorId      String
+  number        String
+  issueDate     DateTime
+  dueDate       DateTime
+  subtotalMinor Int
+  taxMinor      Int       @default(0)
+  totalMinor    Int
+  paidMinor     Int       @default(0)
+  status        String    @default("OPEN") // DRAFT | OPEN | PARTIAL | PAID | OVERDUE | VOID
+  currency      String    @default("INR")
+  notes         String?
+  fileUrl       String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  vendor       Vendor        @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@unique([orgId, vendorId, number])
+  @@index([orgId, status, dueDate])
+}
+
+/// Threshold-based approval routing, evaluated when a claim is submitted.
+model ApprovalPolicy {
+  id            String   @id @default(cuid())
+  orgId         String
+  name          String
+  minAmount     Int      @default(0)
+  maxAmount     Int?
+  approverRole  String   @default("MANAGER")
+  requiresTwo   Boolean  @default(false)
+  categoryId    String?
+  autoApprove   Boolean  @default(false)
+  receiptAbove  Int      @default(100000) // receipt mandatory above this amount
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, isActive])
+}
+
+// ===========================================================================
+// INTEGRATION LAYER
+// Connectors to the systems a company already runs on. Credentials are stored
+// encrypted (AES-256-GCM) in `credentials`; `config` holds non-secret mapping.
+// ===========================================================================
+
+model Integration {
+  id           String    @id @default(cuid())
+  orgId        String?
+  userId       String?
+  provider     String // TALLY | ZOHO_BOOKS | QUICKBOOKS | XERO | SAP | SLACK | GOOGLE_SHEETS | BANK_FEED | RAZORPAY | STRIPE | WEBHOOK
+  displayName  String
+  status       String    @default("DISCONNECTED") // CONNECTED | DISCONNECTED | ERROR | SYNCING
+  mode         String    @default("SANDBOX") // SANDBOX | LIVE
+  credentials  String? // AES-256-GCM ciphertext
+  config       String? // JSON: field mappings, ledger names, account codes
+  scopes       String? // JSON array
+  lastSyncAt   DateTime?
+  lastError    String?
+  syncCursor   String?
+  syncInterval Int       @default(3600) // seconds
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  syncRuns SyncRun[]
+
+  @@unique([orgId, provider])
+  @@index([userId, provider])
+  @@index([status])
+}
+
+model SyncRun {
+  id             String    @id @default(cuid())
+  integrationId  String
+  direction      String // PULL | PUSH | BIDIRECTIONAL
+  status         String    @default("RUNNING") // RUNNING | SUCCESS | PARTIAL | FAILED
+  recordsRead    Int       @default(0)
+  recordsWritten Int       @default(0)
+  recordsSkipped Int       @default(0)
+  errorCount     Int       @default(0)
+  log            String? // JSON array of line items
+  startedAt      DateTime  @default(now())
+  finishedAt     DateTime?
+
+  integration Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  @@index([integrationId, startedAt])
+}
+
+/// Outbound webhooks so a company can push our events into their own stack.
+model WebhookEndpoint {
+  id          String   @id @default(cuid())
+  orgId       String?
+  userId      String?
+  url         String
+  secret      String // HMAC-SHA256 signing secret
+  events      String // JSON array: transaction.created, claim.approved, budget.exceeded...
+  isActive    Boolean  @default(true)
+  failureCount Int     @default(0)
+  lastStatus  Int?
+  createdAt   DateTime @default(now())
+
+  deliveries WebhookDelivery[]
+
+  @@index([orgId, isActive])
+}
+
+model WebhookDelivery {
+  id           String    @id @default(cuid())
+  endpointId   String
+  event        String
+  payload      String
+  statusCode   Int?
+  attempt      Int       @default(1)
+  responseBody String?
+  deliveredAt  DateTime?
+  nextRetryAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  endpoint WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@index([endpointId, createdAt])
+  @@index([nextRetryAt])
+}
+
+/// Machine-to-machine access for a company's own scripts and ERP jobs.
+model ApiKey {
+  id         String    @id @default(cuid())
+  orgId      String?
+  userId     String
+  name       String
+  prefix     String    @unique // shown in the UI: eak_live_a1b2
+  keyHash    String    @unique
+  scopes     String // JSON array
+  rateLimit  Int       @default(1000) // requests/hour
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@index([orgId])
+}
+
+/// Cached ML predictions so the dashboard never blocks on the DS service.
+model MlPrediction {
+  id         String   @id @default(cuid())
+  userId     String?
+  orgId      String?
+  kind       String // CATEGORY | ANOMALY | FORECAST | CLUSTER | RISK | CASHFLOW
+  subjectId  String? // transaction / vendor / department id
+  payload    String // JSON result
+  score      Float    @default(0)
+  modelName  String   @default("baseline")
+  modelVersion String @default("v1")
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime?
+
+  @@index([userId, kind, createdAt])
+  @@index([orgId, kind, createdAt])
+  @@index([subjectId])
 }
