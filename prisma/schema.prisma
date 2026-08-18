@@ -1,0 +1,283 @@
+// Expense Analytics - data model
+// Money is ALWAYS stored as an integer in minor units (paise/cents) to avoid float drift.
+// SQLite has no native enums/arrays, so enum-like columns are Strings constrained by
+// class-validator DTOs + TypeScript union types in src/common/types/domain.types.ts.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  passwordHash  String
+  name          String
+  role          String    @default("USER")
+  currency      String    @default("INR")
+  locale        String    @default("en-IN")
+  timezone      String    @default("Asia/Kolkata")
+  monthlyIncome Int       @default(0)
+  avatarColor   String    @default("#6366f1")
+  isActive      Boolean   @default(true)
+  lastLoginAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  refreshTokens RefreshToken[]
+  accounts      Account[]
+  categories    Category[]
+  transactions  Transaction[]
+  budgets       Budget[]
+  recurring     RecurringRule[]
+  goals         SavingsGoal[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+  tags          Tag[]
+
+  @@index([email])
+}
+
+/// Refresh tokens rotate on every use and are grouped into a "family".
+/// Reuse of a revoked token revokes the whole family (replay-attack defence).
+model RefreshToken {
+  id         String    @id @default(cuid())
+  userId     String
+  tokenHash  String    @unique
+  family     String
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  replacedBy String?
+  userAgent  String?
+  ip         String?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, family])
+  @@index([expiresAt])
+}
+
+model Account {
+  id             String   @id @default(cuid())
+  userId         String
+  name           String
+  type           String   @default("BANK")
+  openingBalance Int      @default(0)
+  currency       String   @default("INR")
+  color          String   @default("#64748b")
+  icon           String   @default("wallet")
+  creditLimit    Int?
+  isArchived     Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions Transaction[]   @relation("TxAccount")
+  transfersIn  Transaction[]   @relation("TxToAccount")
+  recurring    RecurringRule[]
+
+  @@unique([userId, name])
+  @@index([userId, isArchived])
+}
+
+model Category {
+  id           String   @id @default(cuid())
+  userId       String
+  name         String
+  kind         String   @default("EXPENSE")
+  icon         String   @default("tag")
+  color        String   @default("#6366f1")
+  parentId     String?
+  monthlyLimit Int?
+  isSystem     Boolean  @default(false)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent       Category?       @relation("CategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children     Category[]      @relation("CategoryTree")
+  transactions Transaction[]
+  budgets      Budget[]
+  recurring    RecurringRule[]
+
+  @@unique([userId, name, kind])
+  @@index([userId, kind])
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  color     String   @default("#94a3b8")
+  createdAt DateTime @default(now())
+
+  user User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  txs  TransactionTag[]
+
+  @@unique([userId, name])
+}
+
+model TransactionTag {
+  transactionId String
+  tagId         String
+
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  tag         Tag         @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([transactionId, tagId])
+  @@index([tagId])
+}
+
+/// A single money movement. type=TRANSFER uses toAccountId and is excluded from
+/// spend analytics (it is relocation, not consumption).
+model Transaction {
+  id            String    @id @default(cuid())
+  userId        String
+  accountId     String
+  toAccountId   String?
+  categoryId    String?
+  type          String    @default("EXPENSE")
+  amountMinor   Int
+  currency      String    @default("INR")
+  fxRate        Float     @default(1)
+  description   String
+  merchant      String?
+  merchantKey   String?
+  notes         String?
+  date          DateTime
+  paymentMethod String    @default("UPI")
+  isRecurring   Boolean   @default(false)
+  recurringId   String?
+  receiptUrl    String?
+  latitude      Float?
+  longitude     Float?
+  isDeleted     Boolean   @default(false)
+  deletedAt     DateTime?
+  importBatchId String?
+  externalHash  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account   Account          @relation("TxAccount", fields: [accountId], references: [id], onDelete: Cascade)
+  toAccount Account?         @relation("TxToAccount", fields: [toAccountId], references: [id], onDelete: SetNull)
+  category  Category?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  recurring RecurringRule?   @relation(fields: [recurringId], references: [id], onDelete: SetNull)
+  tags      TransactionTag[]
+
+  @@unique([userId, externalHash])
+  @@index([userId, date])
+  @@index([userId, type, date])
+  @@index([userId, categoryId, date])
+  @@index([userId, isDeleted])
+  @@index([userId, merchantKey])
+}
+
+model Budget {
+  id             String    @id @default(cuid())
+  userId         String
+  categoryId     String?
+  name           String
+  amountMinor    Int
+  period         String    @default("MONTHLY")
+  startDate      DateTime
+  endDate        DateTime?
+  rollover       Boolean   @default(false)
+  alertThreshold Float     @default(0.8)
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category Category? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+}
+
+model RecurringRule {
+  id          String    @id @default(cuid())
+  userId      String
+  accountId   String
+  categoryId  String?
+  type        String    @default("EXPENSE")
+  amountMinor Int
+  description String
+  merchant    String?
+  frequency   String    @default("MONTHLY")
+  interval    Int       @default(1)
+  dayOfMonth  Int?
+  weekday     Int?
+  startDate   DateTime
+  endDate     DateTime?
+  nextRunAt   DateTime
+  lastRunAt   DateTime?
+  autoPost    Boolean   @default(true)
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  category     Category?     @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  transactions Transaction[]
+
+  @@index([userId, isActive, nextRunAt])
+}
+
+model SavingsGoal {
+  id          String    @id @default(cuid())
+  userId      String
+  name        String
+  targetMinor Int
+  savedMinor  Int       @default(0)
+  targetDate  DateTime?
+  color       String    @default("#10b981")
+  icon        String    @default("target")
+  isAchieved  Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String
+  severity  String   @default("info")
+  title     String
+  body      String
+  meta      String?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  before    String?
+  after     String?
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([entity, entityId])
+}
