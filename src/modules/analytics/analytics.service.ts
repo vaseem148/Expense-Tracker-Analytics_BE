@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { CacheService } from 'src/common/cache/cache.service';
+import { OrgContextService } from 'src/common/org/org-context.service';
 import { PrismaService } from 'src/common/prisma/prisma.service';
 import { Granularity } from 'src/common/types/domain.types';
 import {
@@ -38,22 +39,25 @@ export class AnalyticsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cache: CacheService,
+    private readonly orgs: OrgContextService,
   ) {}
 
   /**
    * Single point of DB access for analytics. Everything downstream is pure,
    * so one query feeds a dozen different computations.
+   *
+   * The ledger is always company-scoped. FINANCE and above see every member's
+   * spend; everyone else only ever sees their own, which is the same boundary
+   * the claim and budget screens enforce.
    */
   async loadLedger(userId: string, w: Window, orgId?: string): Promise<LedgerRow[]> {
+    const ctx = await this.orgs.resolve(userId, orgId);
     const rows = await this.prisma.transaction.findMany({
       where: {
-        userId,
+        orgId: ctx.orgId,
+        ...(ctx.canSeeAll ? {} : { userId }),
         isDeleted: false,
         date: { gte: w.from, lte: w.to },
-        // Personal analytics must exclude company spend: a founder who also
-        // runs the business ledger would otherwise see corporate opex folded
-        // into their own savings rate and budgets.
-        ...(orgId ? { orgId } : { scope: 'PERSONAL' }),
       },
       select: {
         id: true,
@@ -112,49 +116,67 @@ export class AnalyticsService {
     return `analytics:${userId}:${name}:${w.from.toISOString().slice(0, 10)}:${w.to.toISOString().slice(0, 10)}:${extra}`;
   }
 
-  /** Headline KPI tiles for the dashboard. */
+  /** Headline company KPIs for the dashboard. */
   async overview(userId: string, w: Window = defaultRange()) {
+    const ctx = await this.orgs.resolve(userId);
     return this.cache.wrap(this.key(userId, 'overview', w), CACHE_TTL, async () => {
       const prev = previousPeriod(w.from, w.to);
-      const [rows, prevRows, user] = await Promise.all([
+      const [rows, prevRows, org, headcount] = await Promise.all([
         this.loadLedger(userId, w),
         this.loadLedger(userId, prev),
-        this.prisma.user.findUnique({
-          where: { id: userId },
-          select: { currency: true, monthlyIncome: true },
-        }),
+        this.prisma.organization.findUnique({ where: { id: ctx.orgId } }),
+        this.prisma.orgMember.count({ where: { orgId: ctx.orgId, isActive: true } }),
       ]);
 
-      const expense = sum(rows.filter((r) => r.type === 'EXPENSE').map((r) => r.amount));
-      const income = sum(rows.filter((r) => r.type === 'INCOME').map((r) => r.amount));
-      const prevExpense = sum(prevRows.filter((r) => r.type === 'EXPENSE').map((r) => r.amount));
-      const prevIncome = sum(prevRows.filter((r) => r.type === 'INCOME').map((r) => r.amount));
+      const opex = sum(rows.filter((r) => r.type === 'EXPENSE').map((r) => r.amount));
+      const revenue = sum(rows.filter((r) => r.type === 'INCOME').map((r) => r.amount));
+      const prevOpex = sum(prevRows.filter((r) => r.type === 'EXPENSE').map((r) => r.amount));
+      const prevRevenue = sum(prevRows.filter((r) => r.type === 'INCOME').map((r) => r.amount));
       const days = Math.max(1, daysBetween(w.from, w.to));
       const categories = buildCategoryBreakdown(rows, w.from, w.to, 'month');
-      const declaredIncome = toMajor(user?.monthlyIncome ?? 0);
+
+      const monthlyBurn = (opex / days) * 30;
+      const netBurn = ((opex - revenue) / days) * 30;
+      const cashOnHand = toMajor(org?.cashOnHandMinor ?? 0);
 
       return {
-        currency: user?.currency ?? 'INR',
+        org: { id: ctx.orgId, name: ctx.name, role: ctx.role, scopedToSelf: !ctx.canSeeAll },
+        currency: org?.currency ?? 'INR',
         range: { from: w.from.toISOString(), to: w.to.toISOString(), days },
         totals: {
-          expense: roundTo(expense, 2),
-          income: roundTo(income, 2),
-          net: roundTo(income - expense, 2),
+          expense: roundTo(opex, 2),
+          income: roundTo(revenue, 2),
+          net: roundTo(revenue - opex, 2),
           transactions: rows.length,
           transfers: rows.filter((r) => r.type === 'TRANSFER').length,
+          tax: roundTo(sum(rows.map((r) => r.taxAmount)), 2),
+          billable: roundTo(sum(rows.filter((r) => r.isBillable).map((r) => r.amount)), 2),
         },
         rates: {
-          dailyBurn: roundTo(expense / days, 2),
-          monthlyRunRate: roundTo((expense / days) * 30, 2),
-          savingsRate: income > 0 ? roundTo(((income - expense) / income) * 100, 1) : null,
-          expenseToIncome: income > 0 ? roundTo((expense / income) * 100, 1) : null,
-          averageTransaction: rows.length ? roundTo(expense / Math.max(1, rows.filter((r) => r.type === 'EXPENSE').length), 2) : 0,
+          dailyBurn: roundTo(opex / days, 2),
+          monthlyRunRate: roundTo(monthlyBurn, 2),
+          margin: revenue > 0 ? roundTo(((revenue - opex) / revenue) * 100, 1) : null,
+          expenseToIncome: revenue > 0 ? roundTo((opex / revenue) * 100, 1) : null,
+          averageTransaction: roundTo(
+            opex / Math.max(1, rows.filter((r) => r.type === 'EXPENSE').length),
+            2,
+          ),
+        },
+        runway: {
+          cashOnHand,
+          netBurn: roundTo(netBurn, 2),
+          // A profitable company has no runway to report, so null beats Infinity.
+          months: netBurn > 0 && cashOnHand > 0 ? roundTo(cashOnHand / netBurn, 1) : null,
+        },
+        team: {
+          headcount,
+          costPerEmployee: headcount > 0 ? roundTo(opex / headcount, 2) : 0,
         },
         comparison: {
-          expenseChangePct: pctChange(prevExpense, expense),
-          incomeChangePct: pctChange(prevIncome, income),
-          previousExpense: roundTo(prevExpense, 2),
-          previousIncome: roundTo(prevIncome, 2),
+          expenseChangePct: pctChange(prevOpex, opex),
+          incomeChangePct: pctChange(prevRevenue, revenue),
+          previousExpense: roundTo(prevOpex, 2),
+          previousIncome: roundTo(prevRevenue, 2),
         },
         topCategory: categories[0]
           ? {
@@ -164,8 +186,7 @@ export class AnalyticsService {
               share: categories[0].share,
             }
           : null,
-        budgetedIncome: declaredIncome,
-        projectedMonthEnd: roundTo((expense / days) * 30, 2),
+        projectedMonthEnd: roundTo(monthlyBurn, 2),
       };
     });
   }
@@ -303,11 +324,11 @@ export class AnalyticsService {
     );
 
     const health = financialHealthScore({
-      savingsRate: overview.rates.savingsRate ?? 0,
+      margin: overview.rates.margin ?? 0,
       budgetAdherence: budgets.adherencePct,
       expenseVolatility: coefficientOfVariation(expenseSeries),
       recurringShare: share(recurringSpend, overview.totals.expense),
-      incomeStability: Math.max(0, 100 - coefficientOfVariation(incomeSeries) * 100),
+      revenueStability: Math.max(0, 100 - coefficientOfVariation(incomeSeries) * 100),
     });
 
     const insights = generateInsights({
@@ -344,17 +365,21 @@ export class AnalyticsService {
   }
 
   /** Budget vs actual for every active budget in its current period. */
-  async budgetPerformance(userId: string) {
+  async budgetPerformance(userId: string, orgId?: string) {
+    const ctx = await this.orgs.resolve(userId, orgId);
     const budgets = await this.prisma.budget.findMany({
-      where: { userId, isActive: true },
-      include: { category: { select: { name: true, color: true } } },
+      where: { orgId: ctx.orgId, isActive: true },
+      include: {
+        category: { select: { name: true, color: true } },
+        department: { select: { name: true, color: true } },
+      },
     });
 
     // A budget on a parent category has to cover its children, otherwise a
     // "Food & Dining" cap reads zero while every rupee sits under Groceries
     // and Restaurants.
     const children = await this.prisma.category.findMany({
-      where: { userId, parentId: { not: null } },
+      where: { parentId: { not: null } },
       select: { id: true, parentId: true },
     });
     const descendants = new Map<string, string[]>();
@@ -372,17 +397,17 @@ export class AnalyticsService {
       const { start, end } = currentPeriodWindow(b.period, b.startDate);
       const agg = await this.prisma.transaction.aggregate({
         where: {
-          userId,
+          orgId: ctx.orgId,
           isDeleted: false,
           type: 'EXPENSE',
           date: { gte: start, lte: end },
+          // A budget on a parent category has to cover its children, or a
+          // "Software" cap reads zero while every licence sits under its
+          // sub-categories.
           ...(b.categoryId
             ? { categoryId: { in: [b.categoryId, ...(descendants.get(b.categoryId) ?? [])] } }
             : {}),
-          // A personal budget counts personal spend only; an org budget counts
-          // that org. Mixing them would blow a household cap on the first
-          // company invoice.
-          ...(b.orgId ? { orgId: b.orgId } : { scope: 'PERSONAL' }),
+          ...(b.departmentId ? { departmentId: b.departmentId } : {}),
         },
         _sum: { amountMinor: true },
         _count: { _all: true },
@@ -403,8 +428,9 @@ export class AnalyticsService {
         name: b.name,
         period: b.period,
         categoryId: b.categoryId,
-        categoryName: b.category?.name ?? 'All categories',
-        categoryColor: b.category?.color ?? '#6366f1',
+        categoryName: b.category?.name ?? b.department?.name ?? 'Company-wide',
+        categoryColor: b.category?.color ?? b.department?.color ?? '#6366f1',
+        departmentId: b.departmentId,
         limit,
         spent,
         remaining: roundTo(limit - spent, 2),

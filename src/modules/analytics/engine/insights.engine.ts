@@ -52,20 +52,20 @@ export function generateInsights(input: InsightInput): Insight[] {
     });
   }
 
-  // 2. Savings rate
+  // 2. Net margin
   if (totalIncome > 0) {
-    const savingsRate = roundTo(((totalIncome - totalExpense) / totalIncome) * 100, 1);
+    const margin = roundTo(((totalIncome - totalExpense) / totalIncome) * 100, 1);
     out.push({
-      id: 'savings-rate',
-      severity: savingsRate >= 20 ? 'positive' : savingsRate >= 5 ? 'neutral' : 'critical',
-      title: `Savings rate is ${savingsRate}%`,
+      id: 'net-margin',
+      severity: margin >= 20 ? 'positive' : margin >= 5 ? 'neutral' : 'critical',
+      title: `Net margin is ${margin}%`,
       detail:
-        savingsRate >= 20
-          ? 'Comfortably above the 20% benchmark - keep the surplus working.'
-          : savingsRate >= 0
-            ? 'Below the 20% benchmark. Trimming one recurring charge is usually the fastest fix.'
-            : 'You are spending more than you earn this period.',
-      metric: savingsRate,
+        margin >= 20
+          ? 'Healthy margin - the business funds itself out of revenue.'
+          : margin >= 0
+            ? 'Thin margin. One vendor renegotiation usually moves this more than headcount cuts.'
+            : 'Operating spend exceeded revenue this period.',
+      metric: margin,
       unit: '%',
       tag: 'health',
     });
@@ -78,7 +78,7 @@ export function generateInsights(input: InsightInput): Insight[] {
       id: 'category-concentration',
       severity: top.share >= 45 ? 'warning' : 'neutral',
       title: `${top.name} is ${top.share}% of all spend`,
-      detail: `${fmt(top.total)} across ${top.count} transactions. A single dominant category makes the budget fragile.`,
+      detail: `${fmt(top.total)} across ${top.count} entries. One dominant cost centre makes the plan fragile.`,
       metric: top.share,
       unit: '%',
       tag: 'concentration',
@@ -107,11 +107,11 @@ export function generateInsights(input: InsightInput): Insight[] {
     out.push({
       id: 'recurring-cost',
       severity: totalIncome > 0 && monthly > totalIncome * 0.15 ? 'warning' : 'neutral',
-      title: `Recurring charges cost ${fmt(monthly)} a month`,
-      detail: `That is ${fmt(recurringAnnualCost)} a year locked in before you decide anything.`,
+      title: `Committed subscriptions cost ${fmt(monthly)} a month`,
+      detail: `That is ${fmt(recurringAnnualCost)} a year of fixed cost before a single decision is made.`,
       metric: roundTo(monthly, 2),
       tag: 'recurring',
-      action: 'Cancel anything unused for 60 days.',
+      action: 'Audit anything no team has used in 60 days.',
     });
   }
 
@@ -150,8 +150,8 @@ export function generateInsights(input: InsightInput): Insight[] {
     out.push({
       id: 'burn-rate',
       severity: 'neutral',
-      title: `Average burn is ${fmt(daily)} a day`,
-      detail: `At this pace a 30-day month costs about ${fmt(daily * 30)}.`,
+      title: `Burn is ${fmt(daily)} a day`,
+      detail: `At this pace a 30-day month costs the company about ${fmt(daily * 30)}.`,
       metric: roundTo(daily, 2),
       tag: 'burn',
     });
@@ -163,8 +163,8 @@ export function generateInsights(input: InsightInput): Insight[] {
     out.push({
       id: 'no-spend-days',
       severity: 'positive',
-      title: `${zeroBuckets} zero-spend periods`,
-      detail: 'Long gaps without spending are the cheapest saving mechanism there is.',
+      title: `${zeroBuckets} periods with no spend`,
+      detail: 'Quiet periods keep the run-rate down without touching headcount.',
       metric: zeroBuckets,
       tag: 'behaviour',
     });
@@ -179,19 +179,19 @@ export function generateInsights(input: InsightInput): Insight[] {
  * exactly why the number moved.
  */
 export function financialHealthScore(args: {
-  savingsRate: number;
+  margin: number;
   budgetAdherence: number;
   expenseVolatility: number;
   recurringShare: number;
-  incomeStability: number;
+  revenueStability: number;
 }) {
   const pillars = [
     {
-      key: 'savings',
-      label: 'Savings rate',
+      key: 'margin',
+      label: 'Net margin',
       weight: 0.3,
-      score: clamp((args.savingsRate / 25) * 100, 0, 100),
-      hint: 'Target 20-25% of income saved.',
+      score: clamp((args.margin / 25) * 100, 0, 100),
+      hint: 'Target a 20-25% margin on revenue.',
     },
     {
       key: 'budget',
@@ -215,11 +215,11 @@ export function financialHealthScore(args: {
       hint: 'Recurring charges as a share of total spend.',
     },
     {
-      key: 'income',
-      label: 'Income consistency',
+      key: 'revenue',
+      label: 'Revenue consistency',
       weight: 0.1,
-      score: clamp(args.incomeStability, 0, 100),
-      hint: 'Regular inflow beats lumpy inflow.',
+      score: clamp(args.revenueStability, 0, 100),
+      hint: 'Predictable revenue beats lumpy revenue.',
     },
   ];
 
@@ -232,7 +232,7 @@ export function financialHealthScore(args: {
     pillars: pillars.map((p) => ({ ...p, score: Math.round(p.score) })),
     summary:
       score >= 70
-        ? 'Healthy. Spending is controlled and savings are compounding.'
+        ? 'Healthy. Spend is controlled and the margin is holding.'
         : score >= 50
           ? 'Workable, but one or two pillars are dragging the score down.'
           : 'Fragile. Fix the lowest pillar first - it moves the score fastest.',

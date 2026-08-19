@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import { CacheService } from 'src/common/cache/cache.service';
+import { OrgContextService } from 'src/common/org/org-context.service';
 import { Paginated, paginate } from 'src/common/dto/pagination.dto';
 import { PrismaService } from 'src/common/prisma/prisma.service';
 import { normaliseMerchant, transactionHash } from 'src/common/utils/merchant';
@@ -61,6 +62,7 @@ export class TransactionsService {
     private readonly prisma: PrismaService,
     private readonly cache: CacheService,
     private readonly events: EventEmitter2,
+    private readonly orgs: OrgContextService,
   ) {}
 
   /** Maps a DB row (minor units) to the API shape (major units). */
@@ -95,12 +97,25 @@ export class TransactionsService {
     };
   }
 
-  private buildWhere(userId: string, q: QueryTransactionDto): Prisma.TransactionWhereInput {
-    const where: Prisma.TransactionWhereInput = { userId };
+  private buildWhere(
+    ctx: { orgId: string; canSeeAll: boolean },
+    userId: string,
+    q: QueryTransactionDto,
+  ): Prisma.TransactionWhereInput {
+    // FINANCE and above see the whole company ledger; everyone else sees the
+    // spend they themselves recorded.
+    const where: Prisma.TransactionWhereInput = {
+      orgId: ctx.orgId,
+      ...(ctx.canSeeAll ? {} : { userId }),
+    };
     if (!q.includeDeleted) where.isDeleted = false;
     if (q.type) where.type = q.type;
     if (q.paymentMethod) where.paymentMethod = q.paymentMethod;
     if (q.merchantKey) where.merchantKey = q.merchantKey;
+    if (q.departmentIds?.length) where.departmentId = { in: q.departmentIds };
+    if (q.vendorIds?.length) where.vendorId = { in: q.vendorIds };
+    if (q.projectIds?.length) where.projectId = { in: q.projectIds };
+    if (q.isBillable !== undefined) where.isBillable = q.isBillable;
     if (q.isRecurring !== undefined) where.isRecurring = q.isRecurring;
     if (q.categoryIds?.length) where.categoryId = { in: q.categoryIds };
     if (q.accountIds?.length) where.accountId = { in: q.accountIds };
@@ -128,8 +143,12 @@ export class TransactionsService {
     return where;
   }
 
-  async findAll(userId: string, q: QueryTransactionDto): Promise<Paginated<TransactionView> & { meta: { totals: Record<string, number> } }> {
-    const where = this.buildWhere(userId, q);
+  async findAll(
+    userId: string,
+    q: QueryTransactionDto,
+  ): Promise<Paginated<TransactionView> & { meta: { totals: Record<string, number> } }> {
+    const ctx = await this.orgs.resolve(userId, q.orgId);
+    const where = this.buildWhere(ctx, userId, q);
     const sortBy = ['date', 'amountMinor', 'createdAt', 'description'].includes(q.sortBy ?? '')
       ? (q.sortBy as string)
       : 'date';
@@ -160,12 +179,17 @@ export class TransactionsService {
   }
 
   async findOne(userId: string, id: string): Promise<TransactionView> {
-    const tx = await this.prisma.transaction.findFirst({ where: { id, userId }, include: INCLUDE });
+    const ctx = await this.orgs.resolve(userId);
+    const tx = await this.prisma.transaction.findFirst({
+      where: { id, orgId: ctx.orgId, ...(ctx.canSeeAll ? {} : { userId }) },
+      include: INCLUDE,
+    });
     if (!tx) throw new NotFoundException('Transaction not found');
     return TransactionsService.toView(tx);
   }
 
   async create(userId: string, dto: CreateTransactionDto): Promise<TransactionView> {
+    const ctx = await this.orgs.resolve(userId, dto.orgId);
     await this.assertAccount(userId, dto.accountId);
     if (dto.type === 'TRANSFER') {
       if (!dto.toAccountId) throw new BadRequestException('A transfer needs a destination account');
@@ -180,9 +204,26 @@ export class TransactionsService {
     const amountMinor = toMinor(dto.amount);
     const merchantKey = normaliseMerchant(dto.merchant ?? dto.description);
 
+    const taxRateBps = Math.round((dto.taxRatePct ?? 0) * 100);
+    // Tax is quoted inclusive on Indian invoices, so the component is backed
+    // out of the gross rather than added on top.
+    const taxAmountMinor = taxRateBps
+      ? Math.round(amountMinor - amountMinor / (1 + taxRateBps / 10000))
+      : 0;
+
     const created = await this.prisma.transaction.create({
       data: {
         userId,
+        orgId: ctx.orgId,
+        scope: 'BUSINESS',
+        departmentId: dto.departmentId ?? null,
+        vendorId: dto.vendorId ?? null,
+        projectId: dto.projectId ?? null,
+        taxRateBps,
+        taxAmountMinor,
+        isBillable: dto.isBillable ?? false,
+        isReimbursable: dto.isReimbursable ?? false,
+        invoiceNumber: dto.invoiceNumber ?? null,
         accountId: dto.accountId,
         toAccountId: dto.type === 'TRANSFER' ? dto.toAccountId : null,
         categoryId: dto.type === 'TRANSFER' ? null : (dto.categoryId ?? null),
@@ -216,7 +257,10 @@ export class TransactionsService {
   }
 
   async update(userId: string, id: string, dto: UpdateTransactionDto): Promise<TransactionView> {
-    const existing = await this.prisma.transaction.findFirst({ where: { id, userId } });
+    const ctx = await this.orgs.resolve(userId);
+    const existing = await this.prisma.transaction.findFirst({
+      where: { id, orgId: ctx.orgId, ...(ctx.canSeeAll ? {} : { userId }) },
+    });
     if (!existing) throw new NotFoundException('Transaction not found');
     if (dto.accountId) await this.assertAccount(userId, dto.accountId);
     if (dto.categoryId) await this.assertCategory(userId, dto.categoryId);
@@ -238,6 +282,21 @@ export class TransactionsService {
         ...(merchantSource !== undefined
           ? { merchant: dto.merchant?.trim() ?? null, merchantKey: normaliseMerchant(merchantSource) }
           : {}),
+        ...(dto.departmentId !== undefined ? { departmentId: dto.departmentId || null } : {}),
+        ...(dto.vendorId !== undefined ? { vendorId: dto.vendorId || null } : {}),
+        ...(dto.projectId !== undefined ? { projectId: dto.projectId || null } : {}),
+        ...(dto.isBillable !== undefined ? { isBillable: dto.isBillable } : {}),
+        ...(dto.isReimbursable !== undefined ? { isReimbursable: dto.isReimbursable } : {}),
+        ...(dto.invoiceNumber !== undefined ? { invoiceNumber: dto.invoiceNumber } : {}),
+        ...(dto.taxRatePct !== undefined
+          ? {
+              taxRateBps: Math.round(dto.taxRatePct * 100),
+              taxAmountMinor: Math.round(
+                (dto.amount !== undefined ? toMinor(dto.amount) : existing.amountMinor) *
+                  (1 - 1 / (1 + (dto.taxRatePct * 100) / 10000)),
+              ),
+            }
+          : {}),
         ...(dto.tags
           ? { tags: { deleteMany: {}, create: await this.tagLinks(userId, dto.tags) } }
           : {}),
@@ -253,7 +312,10 @@ export class TransactionsService {
 
   /** Soft delete keeps history recoverable and analytics reproducible. */
   async remove(userId: string, id: string) {
-    const existing = await this.prisma.transaction.findFirst({ where: { id, userId } });
+    const ctx = await this.orgs.resolve(userId);
+    const existing = await this.prisma.transaction.findFirst({
+      where: { id, orgId: ctx.orgId, ...(ctx.canSeeAll ? {} : { userId }) },
+    });
     if (!existing) throw new NotFoundException('Transaction not found');
     await this.prisma.transaction.update({
       where: { id },
@@ -265,8 +327,9 @@ export class TransactionsService {
   }
 
   async restore(userId: string, id: string) {
+    const ctx = await this.orgs.resolve(userId);
     const res = await this.prisma.transaction.updateMany({
-      where: { id, userId, isDeleted: true },
+      where: { id, orgId: ctx.orgId, isDeleted: true, ...(ctx.canSeeAll ? {} : { userId }) },
       data: { isDeleted: false, deletedAt: null },
     });
     if (!res.count) throw new NotFoundException('No deleted transaction with that id');
@@ -275,8 +338,9 @@ export class TransactionsService {
   }
 
   async bulkDelete(userId: string, dto: BulkDeleteDto) {
+    const ctx = await this.orgs.resolve(userId);
     const res = await this.prisma.transaction.updateMany({
-      where: { id: { in: dto.ids }, userId },
+      where: { id: { in: dto.ids }, orgId: ctx.orgId, ...(ctx.canSeeAll ? {} : { userId }) },
       data: { isDeleted: true, deletedAt: new Date() },
     });
     this.invalidate(userId);
@@ -284,9 +348,10 @@ export class TransactionsService {
   }
 
   async bulkCategorize(userId: string, dto: BulkCategorizeDto) {
+    const ctx = await this.orgs.resolve(userId);
     await this.assertCategory(userId, dto.categoryId);
     const res = await this.prisma.transaction.updateMany({
-      where: { id: { in: dto.ids }, userId },
+      where: { id: { in: dto.ids }, orgId: ctx.orgId, ...(ctx.canSeeAll ? {} : { userId }) },
       data: { categoryId: dto.categoryId },
     });
     this.invalidate(userId);
@@ -295,9 +360,16 @@ export class TransactionsService {
 
   /** Distinct merchants with spend totals - powers the merchant leaderboard. */
   async merchants(userId: string, limit = 25) {
+    const ctx = await this.orgs.resolve(userId);
     const rows = await this.prisma.transaction.groupBy({
       by: ['merchantKey'],
-      where: { userId, isDeleted: false, type: 'EXPENSE', merchantKey: { not: null } },
+      where: {
+        orgId: ctx.orgId,
+        ...(ctx.canSeeAll ? {} : { userId }),
+        isDeleted: false,
+        type: 'EXPENSE',
+        merchantKey: { not: null },
+      },
       _sum: { amountMinor: true },
       _count: { _all: true },
       _max: { date: true },

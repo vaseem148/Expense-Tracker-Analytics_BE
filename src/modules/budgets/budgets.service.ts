@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { CacheService } from 'src/common/cache/cache.service';
+import { OrgContextService } from 'src/common/org/org-context.service';
 import { PrismaService } from 'src/common/prisma/prisma.service';
 import { toMajor, toMinor } from 'src/common/utils/money';
 import { AnalyticsService } from '../analytics/analytics.service';
@@ -11,6 +12,7 @@ export class BudgetsService {
     private readonly prisma: PrismaService,
     private readonly cache: CacheService,
     private readonly analytics: AnalyticsService,
+    private readonly orgs: OrgContextService,
   ) {}
 
   /** Budgets always come back with live consumption - a bare limit is useless. */
@@ -19,8 +21,9 @@ export class BudgetsService {
   }
 
   async findOne(userId: string, id: string) {
+    const ctx = await this.orgs.resolve(userId);
     const budget = await this.prisma.budget.findFirst({
-      where: { id, userId },
+      where: { id, orgId: ctx.orgId },
       include: { category: { select: { name: true, color: true } } },
     });
     if (!budget) throw new NotFoundException('Budget not found');
@@ -29,6 +32,8 @@ export class BudgetsService {
   }
 
   async create(userId: string, dto: CreateBudgetDto) {
+    // FINANCE owns the company plan; a manager cannot quietly raise their own cap.
+    const ctx = await this.orgs.require(userId, dto.orgId, 'FINANCE');
     const budget = await this.prisma.budget.create({
       data: {
         userId,
@@ -36,7 +41,7 @@ export class BudgetsService {
         amountMinor: toMinor(dto.amount),
         period: dto.period ?? 'MONTHLY',
         categoryId: dto.categoryId ?? null,
-        orgId: dto.orgId ?? null,
+        orgId: ctx.orgId,
         departmentId: dto.departmentId ?? null,
         startDate: dto.startDate ? new Date(dto.startDate) : new Date(),
         endDate: dto.endDate ? new Date(dto.endDate) : null,
@@ -76,7 +81,11 @@ export class BudgetsService {
   }
 
   private async assertOwned(userId: string, id: string): Promise<void> {
-    const found = await this.prisma.budget.findFirst({ where: { id, userId }, select: { id: true } });
+    const ctx = await this.orgs.require(userId, undefined, 'FINANCE');
+    const found = await this.prisma.budget.findFirst({
+      where: { id, orgId: ctx.orgId },
+      select: { id: true },
+    });
     if (!found) throw new NotFoundException('Budget not found');
   }
 }

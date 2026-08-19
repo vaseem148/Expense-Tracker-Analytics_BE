@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CacheService } from 'src/common/cache/cache.service';
+import { OrgContextService } from 'src/common/org/org-context.service';
 import { PrismaService } from 'src/common/prisma/prisma.service';
 import { Frequency } from 'src/common/types/domain.types';
 import { normaliseMerchant, transactionHash } from 'src/common/utils/merchant';
@@ -16,6 +17,7 @@ export class RecurringService {
     private readonly prisma: PrismaService,
     private readonly cache: CacheService,
     private readonly events: EventEmitter2,
+    private readonly orgs: OrgContextService,
   ) {}
 
   async findAll(userId: string) {
@@ -75,6 +77,8 @@ export class RecurringService {
   }
 
   async create(userId: string, dto: CreateRecurringDto) {
+    // Recurring rules are company commitments, so they need spend authority.
+    await this.orgs.require(userId, undefined, 'MANAGER');
     const start = new Date(dto.startDate);
     const rule = await this.prisma.recurringRule.create({
       data: {
@@ -200,9 +204,16 @@ export class RecurringService {
 
     let created = existing;
     if (!existing) {
+      const membership = await this.prisma.orgMember.findFirst({
+        where: { userId: rule.userId, isActive: true },
+        select: { orgId: true },
+        orderBy: { joinedAt: 'asc' },
+      });
       created = await this.prisma.transaction.create({
         data: {
           userId: rule.userId,
+          orgId: membership?.orgId ?? null,
+          scope: 'BUSINESS',
           accountId: rule.accountId,
           categoryId: rule.categoryId,
           type: rule.type,

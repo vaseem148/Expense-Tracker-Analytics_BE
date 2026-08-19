@@ -29,10 +29,15 @@ export class CreateBudgetDto {
   @IsIn(BUDGET_PERIODS)
   period: BudgetPeriod = 'MONTHLY';
 
-  @ApiPropertyOptional({ description: 'Omit for an all-category budget' })
+  @ApiPropertyOptional({ description: 'Omit to cap the whole company' })
   @IsOptional()
   @IsString()
   categoryId?: string;
+
+  @ApiPropertyOptional({ description: 'Cap a single cost centre' })
+  @IsOptional()
+  @IsString()
+  departmentId?: string;
 
   @ApiPropertyOptional({ example: '2026-01-01' })
   @IsOptional()
@@ -61,15 +66,10 @@ export class CreateBudgetDto {
   @IsBoolean()
   isActive?: boolean;
 
-  @ApiPropertyOptional({ description: 'Attach to an organization (business budget)' })
+  @ApiPropertyOptional({ description: 'Defaults to your primary company' })
   @IsOptional()
   @IsString()
   orgId?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  departmentId?: string;
 }
 
 export class UpdateBudgetDto extends PartialType(CreateBudgetDto) {}

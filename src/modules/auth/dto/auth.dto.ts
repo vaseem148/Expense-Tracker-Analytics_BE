@@ -37,11 +37,23 @@ export class RegisterDto {
   @MaxLength(3)
   currency?: string;
 
-  @ApiPropertyOptional({ example: 85000, description: 'Monthly income in major units' })
+  @ApiProperty({ example: 'Vaseem Technologies', description: 'The company this account manages' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  companyName!: string;
+
+  @ApiPropertyOptional({ example: '33AABCU9603R1ZM' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(15)
+  gstin?: string;
+
+  @ApiPropertyOptional({ example: 2500000, description: 'Cash on hand, major units' })
   @IsOptional()
   @IsNumber()
   @Min(0)
-  monthlyIncome?: number;
+  cashOnHand?: number;
 }
 
 export class LoginDto {

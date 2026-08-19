@@ -63,17 +63,19 @@ export class AuthService {
         name: dto.name.trim(),
         passwordHash: await argon2.hash(dto.password, ARGON_OPTS),
         currency: dto.currency ?? this.config.get<string>('defaultCurrency') ?? 'INR',
-        monthlyIncome: toMinor(dto.monthlyIncome ?? 0),
       },
     });
 
-    // A brand new ledger with no categories is useless, so seed the defaults.
+    // Registration provisions a company, not a personal ledger: default cost
+    // categories, four cost centres, an operating account and the approval
+    // policies a finance team expects on day one.
     await this.categories.seedDefaults(user.id);
     await this.prisma.account.create({
-      data: { userId: user.id, name: 'Main Account', type: 'BANK', currency: user.currency },
+      data: { userId: user.id, name: 'Operating Account', type: 'BANK', currency: user.currency },
     });
+    await this.provisionCompany(user.id, dto);
 
-    this.logger.log(`registered ${email}`);
+    this.logger.log(`registered ${email} with company "${dto.companyName}"`);
     return this.issue(user, meta);
   }
 
@@ -255,6 +257,59 @@ export class AuthService {
         avatarColor: user.avatarColor,
       },
     };
+  }
+
+  /** Creates the organization, its cost centres and its approval policies. */
+  private async provisionCompany(ownerId: string, dto: RegisterDto): Promise<void> {
+    const base =
+      dto.companyName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 40) || 'company';
+    let slug = base;
+    let n = 1;
+    while (await this.prisma.organization.findUnique({ where: { slug }, select: { id: true } })) {
+      slug = `${base}-${++n}`;
+    }
+
+    await this.prisma.organization.create({
+      data: {
+        name: dto.companyName.trim(),
+        slug,
+        gstin: dto.gstin ?? null,
+        currency: dto.currency ?? 'INR',
+        cashOnHandMinor: toMinor(dto.cashOnHand ?? 0),
+        ownerId,
+        members: { create: { userId: ownerId, role: 'OWNER', title: 'Founder' } },
+        departments: {
+          create: [
+            { name: 'Engineering', code: 'ENG', color: '#0ea5e9' },
+            { name: 'Sales & Marketing', code: 'SLS', color: '#f97316' },
+            { name: 'Operations', code: 'OPS', color: '#10b981' },
+            { name: 'General & Admin', code: 'GNA', color: '#64748b' },
+          ],
+        },
+        policies: {
+          create: [
+            {
+              name: 'Standard approval',
+              minAmount: 0,
+              maxAmount: 2500000,
+              approverRole: 'MANAGER',
+              receiptAbove: 100000,
+            },
+            {
+              name: 'Senior approval',
+              minAmount: 2500000,
+              approverRole: 'FINANCE',
+              requiresTwo: true,
+              receiptAbove: 100000,
+            },
+          ],
+        },
+      },
+    });
   }
 
   private hash(token: string): string {

@@ -84,4 +84,33 @@ export class QueryTransactionDto extends PaginationDto {
   @IsOptional()
   @IsString()
   merchantKey?: string;
+
+  @ApiPropertyOptional({ description: 'Organization to read; defaults to your primary company' })
+  @IsOptional()
+  @IsString()
+  orgId?: string;
+
+  @ApiPropertyOptional({ description: 'Comma-separated department ids' })
+  @IsOptional()
+  @Transform(csv)
+  @IsArray()
+  departmentIds?: string[];
+
+  @ApiPropertyOptional({ description: 'Comma-separated vendor ids' })
+  @IsOptional()
+  @Transform(csv)
+  @IsArray()
+  vendorIds?: string[];
+
+  @ApiPropertyOptional({ description: 'Comma-separated project ids' })
+  @IsOptional()
+  @Transform(csv)
+  @IsArray()
+  projectIds?: string[];
+
+  @ApiPropertyOptional({ description: 'Only billable-to-client spend' })
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
+  isBillable?: boolean;
 }

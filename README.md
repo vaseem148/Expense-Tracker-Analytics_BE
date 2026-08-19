@@ -1,8 +1,12 @@
 # Expense Analytics — Backend
 
-Expense intelligence platform for **individuals and companies**: a ledger, an
-analytics engine, an org-scoped business layer, an integration framework and a
-Python data-science service — behind one typed REST API.
+**Company spend management API.** Every rupee carries a cost centre, a vendor
+and a project, so variance always has an owner. A ledger, an analytics engine,
+approval workflows, an integration framework and a Python data-science service
+behind one typed REST API.
+
+There is no personal mode: registration provisions a company, and every read is
+scoped to an organization.
 
 ```
 NestJS 11 · Prisma 6 · SQLite (Postgres-ready) · Passport JWT · Socket.IO
@@ -23,10 +27,18 @@ pnpm dev           # http://localhost:4000/api/v1
 
 Docs: **http://localhost:4000/api/docs** (Swagger, persisted bearer auth)
 
-| Account               | Password    | Role                     |
-| --------------------- | ----------- | ------------------------ |
-| `demo@expense.app`    | `Demo#1234` | ADMIN + org OWNER        |
-| `analyst@expense.app` | `Demo#1234` | org FINANCE              |
+Seeded company: **Vaseem Technologies** — 18 months of spend and revenue across
+4 cost centres, 10 suppliers, 2 projects and 7 people.
+
+| Account                | Password    | Role     | Sees                        |
+| ---------------------- | ----------- | -------- | --------------------------- |
+| `demo@expense.app`     | `Demo#1234` | OWNER    | the whole company           |
+| `analyst@expense.app`  | `Demo#1234` | FINANCE  | the whole company           |
+| `arjun@expense.app`    | `Demo#1234` | MANAGER  | their own spend, approves claims |
+| `karthik@expense.app`  | `Demo#1234` | EMPLOYEE | their own spend only        |
+
+Role scoping is enforced in `loadLedger`, not in the UI: FINANCE and above read
+the company ledger, everyone else reads only rows they recorded.
 
 Optional ML service:
 
@@ -59,8 +71,10 @@ never an exception).
   dispersion, with a confidence score and annualised cost
 - **Pareto & concentration** — vital-few categories, Gini coefficient
 - **Budget performance** — consumed vs *pace*, so "80% spent on day 5" reads as
-  at-risk rather than fine
-- **Financial health score** — five weighted, individually explainable pillars
+  at-risk rather than fine; a cap on a parent category covers its children, and a
+  cap on a cost centre covers everything charged to it
+- **Company health score** — margin, budget adherence, spend stability,
+  fixed-cost load and revenue consistency, each individually explainable
 - **Insights** — deterministic narrative rules; every sentence traces to a number
 
 ### Business layer (`src/modules/business`)
@@ -106,6 +120,8 @@ deterministic seeded data, so the whole flow is demonstrable without credentials
 - **Money** — integers in minor units everywhere; `1.005 * 100` is
   `100.49999999999999` in binary float, so conversion goes through string
   exponent notation instead
+- **Tax** — GST is quoted inclusive on Indian invoices, so the component is
+  backed out of the gross rather than added on top
 - **Realtime** — Socket.IO rooms keyed by user id (the room *is* the authz boundary)
 - **Scheduler** — recurring posting, budget sweeps, anomaly scans, housekeeping
 - **Cross-cutting** — one error envelope, response wrapper, request tracing,
@@ -118,11 +134,11 @@ deterministic seeded data, so the whole flow is demonstrable without credentials
 | Group | Base |
 | --- | --- |
 | Auth & sessions | `/api/v1/auth` |
-| Ledger | `/api/v1/transactions` |
+| Company ledger | `/api/v1/transactions` |
 | Accounts / categories / tags | `/api/v1/accounts`, `/categories` |
-| Budgets / goals / recurring | `/api/v1/budgets`, `/goals`, `/recurring` |
+| Budgets / subscriptions | `/api/v1/budgets`, `/recurring` |
 | Analytics | `/api/v1/analytics/*` |
-| Business | `/api/v1/orgs/:orgId/*` |
+| Org, vendors, projects, claims, payables | `/api/v1/orgs/:orgId/*` |
 | Integrations | `/api/v1/integrations/*` |
 | Data science | `/api/v1/ml/*` |
 | Import / export | `/api/v1/data/*` |
@@ -143,5 +159,8 @@ bug above was caught by one of them.
   enums and arrays, so moving to Postgres is a `datasource` change.
 - **Soft deletes** on transactions: analytics stay reproducible and an accidental
   delete is recoverable.
+- **No personal ledger.** An earlier build supported both; mixing them meant
+  company opex landed inside an owner's personal savings rate. Rather than patch
+  the filter, the personal mode was removed.
 - **Derived balances** — never stored. An edited transaction cannot leave a
   stale balance behind.

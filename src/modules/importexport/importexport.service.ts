@@ -238,31 +238,29 @@ export class ImportExportService {
     );
   }
 
-  /** Full JSON export - the portable backup of everything a user owns. */
+  /** Full JSON export - the portable backup of the company ledger. */
   async exportJson(userId: string) {
-    const [user, accounts, categories, transactions, budgets, recurring, goals] = await Promise.all([
+    const [user, accounts, categories, transactions, budgets, recurring] = await Promise.all([
       this.prisma.user.findUnique({
         where: { id: userId },
-        select: { email: true, name: true, currency: true, locale: true, monthlyIncome: true },
+        select: { email: true, name: true, currency: true, locale: true },
       }),
       this.prisma.account.findMany({ where: { userId } }),
       this.prisma.category.findMany({ where: { userId } }),
       this.prisma.transaction.findMany({ where: { userId, isDeleted: false } }),
       this.prisma.budget.findMany({ where: { userId } }),
       this.prisma.recurringRule.findMany({ where: { userId } }),
-      this.prisma.savingsGoal.findMany({ where: { userId } }),
     ]);
 
     return {
       exportedAt: new Date().toISOString(),
       schemaVersion: 1,
-      user: user ? { ...user, monthlyIncome: toMajor(user.monthlyIncome) } : null,
+      user,
       accounts: accounts.map((a) => ({ ...a, openingBalance: toMajor(a.openingBalance) })),
       categories,
       transactions: transactions.map((t) => ({ ...t, amount: toMajor(t.amountMinor) })),
       budgets: budgets.map((b) => ({ ...b, amount: toMajor(b.amountMinor) })),
       recurring: recurring.map((r) => ({ ...r, amount: toMajor(r.amountMinor) })),
-      goals: goals.map((g) => ({ ...g, target: toMajor(g.targetMinor), saved: toMajor(g.savedMinor) })),
     };
   }
 

@@ -34,7 +34,6 @@ model User {
   transactions  Transaction[]
   budgets       Budget[]
   recurring     RecurringRule[]
-  goals         SavingsGoal[]
   notifications Notification[]
   auditLogs     AuditLog[]
   tags          Tag[]
@@ -168,7 +167,7 @@ model Transaction {
   externalHash  String?
 
   // --- business layer -------------------------------------------------
-  scope          String  @default("PERSONAL") // PERSONAL | BUSINESS
+  scope          String  @default("BUSINESS")
   orgId          String?
   vendorId       String?
   departmentId   String?
@@ -264,24 +263,6 @@ model RecurringRule {
   transactions Transaction[]
 
   @@index([userId, isActive, nextRunAt])
-}
-
-model SavingsGoal {
-  id          String    @id @default(cuid())
-  userId      String
-  name        String
-  targetMinor Int
-  savedMinor  Int       @default(0)
-  targetDate  DateTime?
-  color       String    @default("#10b981")
-  icon        String    @default("target")
-  isAchieved  Boolean   @default(false)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
 }
 
 model Notification {

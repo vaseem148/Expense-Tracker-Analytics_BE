@@ -7,6 +7,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import configuration from './common/config/configuration';
 import { AppCacheModule } from './common/cache/cache.module';
 import { PrismaModule } from './common/prisma/prisma.module';
+import { OrgContextModule } from './common/org/org.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
@@ -19,7 +20,6 @@ import { AuthModule } from './modules/auth/auth.module';
 import { BudgetsModule } from './modules/budgets/budgets.module';
 import { BusinessModule } from './modules/business/business.module';
 import { CategoriesModule } from './modules/categories/categories.module';
-import { GoalsModule } from './modules/goals/goals.module';
 import { HealthModule } from './modules/health/health.module';
 import { ImportExportModule } from './modules/importexport/importexport.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
@@ -42,6 +42,7 @@ import { UsersModule } from './modules/users/users.module';
     ]),
     PrismaModule,
     AppCacheModule,
+    OrgContextModule,
     RealtimeModule,
     NotificationsModule,
     AuthModule,
@@ -52,7 +53,6 @@ import { UsersModule } from './modules/users/users.module';
     BudgetsModule,
     BusinessModule,
     RecurringModule,
-    GoalsModule,
     AnalyticsModule,
     ImportExportModule,
     IntegrationsModule,

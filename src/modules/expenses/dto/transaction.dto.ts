@@ -3,6 +3,7 @@ import { PartialType } from '@nestjs/mapped-types';
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsIn,
   IsISO8601,
   IsLatitude,
@@ -12,7 +13,9 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
 import {
   PAYMENT_METHODS,
@@ -95,6 +98,50 @@ export class CreateTransactionDto {
   @IsOptional()
   @IsLongitude()
   longitude?: number;
+
+  // --- company attribution -------------------------------------------
+
+  @ApiPropertyOptional({ description: 'Organization; defaults to your primary company' })
+  @IsOptional()
+  @IsString()
+  orgId?: string;
+
+  @ApiPropertyOptional({ description: 'Cost centre this spend belongs to' })
+  @IsOptional()
+  @IsString()
+  departmentId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  vendorId?: string;
+
+  @ApiPropertyOptional({ description: 'Client project, for billable tracking' })
+  @IsOptional()
+  @IsString()
+  projectId?: string;
+
+  @ApiPropertyOptional({ example: 18, description: 'GST/VAT rate as a percentage' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  taxRatePct?: number;
+
+  @ApiPropertyOptional({ description: 'Re-billable to a client' })
+  @IsOptional()
+  @IsBoolean()
+  isBillable?: boolean;
+
+  @ApiPropertyOptional({ description: 'Claimable by the employee who paid' })
+  @IsOptional()
+  @IsBoolean()
+  isReimbursable?: boolean;
+
+  @ApiPropertyOptional({ example: 'INV-2026-0042' })
+  @IsOptional()
+  @IsString()
+  invoiceNumber?: string;
 }
 
 export class UpdateTransactionDto extends PartialType(CreateTransactionDto) {}
