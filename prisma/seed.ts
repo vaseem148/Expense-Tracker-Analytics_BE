@@ -326,12 +326,15 @@ async function seedPlanning(): Promise<void> {
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
+  // Sized against the generated spend so the demo shows a realistic spread of
+  // on-track, at-risk and exceeded rather than five red bars.
   const budgets = [
-    { name: 'Monthly ceiling', amount: 78000, categoryId: null },
-    { name: 'Food & Dining', amount: 18000, categoryId: categoryIds.get('Food & Dining') },
-    { name: 'Shopping', amount: 12000, categoryId: categoryIds.get('Shopping') },
-    { name: 'Transport', amount: 9000, categoryId: categoryIds.get('Transport') },
-    { name: 'Entertainment', amount: 4000, categoryId: categoryIds.get('Entertainment') },
+    { name: 'Monthly ceiling', amount: 145000, categoryId: null },
+    { name: 'Food & Dining', amount: 46000, categoryId: categoryIds.get('Food & Dining') },
+    { name: 'Shopping', amount: 26000, categoryId: categoryIds.get('Shopping') },
+    { name: 'Transport', amount: 21000, categoryId: categoryIds.get('Transport') },
+    { name: 'Entertainment', amount: 5000, categoryId: categoryIds.get('Entertainment') },
+    { name: 'Health', amount: 9000, categoryId: categoryIds.get('Health') },
   ];
   for (const b of budgets) {
     await prisma.budget.create({

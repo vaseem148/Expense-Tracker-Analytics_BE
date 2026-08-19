@@ -50,7 +50,10 @@ export class AnalyticsService {
         userId,
         isDeleted: false,
         date: { gte: w.from, lte: w.to },
-        ...(orgId ? { orgId } : {}),
+        // Personal analytics must exclude company spend: a founder who also
+        // runs the business ledger would otherwise see corporate opex folded
+        // into their own savings rate and budgets.
+        ...(orgId ? { orgId } : { scope: 'PERSONAL' }),
       },
       select: {
         id: true,
@@ -347,6 +350,20 @@ export class AnalyticsService {
       include: { category: { select: { name: true, color: true } } },
     });
 
+    // A budget on a parent category has to cover its children, otherwise a
+    // "Food & Dining" cap reads zero while every rupee sits under Groceries
+    // and Restaurants.
+    const children = await this.prisma.category.findMany({
+      where: { userId, parentId: { not: null } },
+      select: { id: true, parentId: true },
+    });
+    const descendants = new Map<string, string[]>();
+    for (const c of children) {
+      const list = descendants.get(c.parentId!) ?? [];
+      list.push(c.id);
+      descendants.set(c.parentId!, list);
+    }
+
     const items = [];
     let weightedAdherence = 0;
     let weight = 0;
@@ -359,7 +376,13 @@ export class AnalyticsService {
           isDeleted: false,
           type: 'EXPENSE',
           date: { gte: start, lte: end },
-          ...(b.categoryId ? { categoryId: b.categoryId } : {}),
+          ...(b.categoryId
+            ? { categoryId: { in: [b.categoryId, ...(descendants.get(b.categoryId) ?? [])] } }
+            : {}),
+          // A personal budget counts personal spend only; an org budget counts
+          // that org. Mixing them would blow a household cap on the first
+          // company invoice.
+          ...(b.orgId ? { orgId: b.orgId } : { scope: 'PERSONAL' }),
         },
         _sum: { amountMinor: true },
         _count: { _all: true },
